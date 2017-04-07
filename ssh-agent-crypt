@@ -95,7 +95,8 @@ for key in agent_keys:
 	
 	if get_or_set == "get":
 		if not os.path.isfile( path_file ):
-			continue
+			print >>sys.stderr, "ERROR: encrypted data not found:", path_file
+			sys.exit( 4 )
 		with open( path_file, 'rb' ) as fp:
 			try:
 				decrypt( fp, password ) # decrypt to stdout
