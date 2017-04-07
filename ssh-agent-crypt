@@ -97,24 +97,28 @@ for key in agent_keys:
 		if not os.path.isfile( path_file ):
 			print >>sys.stderr, "ERROR: encrypted data not found:", path_file
 			sys.exit( 4 )
+		
 		with open( path_file, 'rb' ) as fp:
 			try:
 				decrypt( fp, password ) # decrypt to stdout
 			except:
 				print >>sys.stderr, "ERROR: decryption failed:", path_file
 				sys.exit( 4 )
+		
 		sys.exit( 0 )
 	
 	elif get_or_set == "set":
 		os.umask( 077 )
 		if not os.path.isdir( os.path.dirname( path_file ) ):
 			os.makedirs( os.path.dirname( path_file ) )
+		
 		with open( path_file + ".tmp", 'wb' ) as fp:
 			try:
 				encrypt( fp, password ) # encrypt from stdin
 			except:
 				print >>sys.stderr, "ERROR: encryption failed:", path_file
 				sys.exit( 4 )
+		
 		os.rename( path_file + ".tmp", path_file ) # for atomic write
 		sys.exit( 0 )
 
