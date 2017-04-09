@@ -1,25 +1,49 @@
 #!/usr/bin/python
 
-## 2017-04-06 : tkooda : Use SSH keys from ssh-agent to read / write encrypted (e.g. config) data
+## 2017-04-06 : tkooda : Use RSA SSH keys from ssh-agent to store / retreive encrypted (e.g. config) data
 
 ## NOTES:
+##  - this only works with RSA (and not DSA/ECDSA) keys because RSA keys are the only ones that produce a consistent signature output (given a consistent input) that can be used for encryption/decryption
 ##  - 'set' reads from stdin
 ##  - 'get' writes to stdout
-##  - order and case are significant for qualifiers
+##  - order and case are significant for identifiers
+##  - obtain SSH key md5 fingerprints with:  `ssh-agent-crypt -l`
 ##  - use openssl compatible method of encryption/decryption
-##  - obtain SSH key md5 fingerprint with:  `ssh-add -lE md5 |sed 's,MD5:,,g;s,:,,g'`
 
 ## EXAMPLE USAGE:
-##   echo myPassword123 | ssh-agent-crypt set 7bcd0ca5aacd1608f26bff3f863da65c imaps myusername example.com
-##   ssh-agent-crypt get 7bcd0ca5aacd1608f26bff3f863da65c imaps myusername example.com
+##   echo 'myPassword123' | ssh-agent-crypt --all set imaps myusername example.com
+##   ssh-agent-crypt get imaps myusername example.com
 
 
+from __future__ import print_function
 import os
 import sys
+from argparse import ArgumentParser
+try:
+    from urllib import quote  # Python 2.X
+except ImportError:
+    from urllib.parse import quote  # Python 3+
 import paramiko
-from hashlib import md5 # use md5 because `ssh-add -lE md5` supports it, and sha256 hashes are base64 with slashes
+from hashlib import md5 # use md5 because `ssh-add -lE md5` supports it, and sha256 hashes are base64 that contain slashes
 from Crypto.Cipher import AES
 from Crypto import Random
+
+
+def usage( parser, *args, **kwargs ):
+	sys.stdout.flush()
+	sys.stderr.flush()
+	print( *args, file=sys.stderr, **kwargs )
+	parser.print_usage()
+	sys.exit( 1 )
+
+
+def eprint( *args, **kwargs ):
+    exit = kwargs.pop( "exit", None )  # optional exit=N arg
+    sys.stdout.flush()
+    sys.stderr.flush()
+    print( *args, file=sys.stderr, **kwargs )
+    if exit:
+        sys.exit( exit )
 
 
 def derive_key_and_iv(password, salt, key_length, iv_length):
@@ -68,59 +92,105 @@ def decrypt(in_file, password, key_length=32):
         sys.stdout.write(chunk)
 
 
-if len( sys.argv ) < 4 or ( sys.argv[1] != "get" and sys.argv[1] != "set" ):
-	print >>sys.stderr, "usage: %s <get|set> <key_md5> <qualifiers..>" % os.path.basename( sys.argv[ 0 ] )
-	sys.exit( 2 )
+## parse args..
+parser = ArgumentParser( description = "Use RSA SSH keys from ssh-agent to store / retreive encrypted (e.g. config) data" )
+group = parser.add_mutually_exclusive_group()
+group.add_argument( "-k", "--key", action="append", help="md5 fingerprint of SSH key to encrypt the data for" )
+group.add_argument( "-a", "--all", action="store_true", default=False, help="Encrypt data for all RSA SSH keys currently in ssh-agent" )
+group.add_argument( "-l", "--list", action="store_true", default=False, help="List all SSH keys currently in ssh-agent" )
+parser.add_argument( "command", choices=[ "get", "set" ], nargs="?", help="Get or set encrypted data" )
+parser.add_argument( "identifier", nargs="*", help="One or more data identifiers (e.g. 'imaps' 'example.com' 'myuser')" )
+args = parser.parse_args()
 
-get_or_set = sys.argv[ 1 ]
-key_md5 = sys.argv[ 2 ]
-qualifiers = sys.argv[ 3: ] # order and case are significant
 
-path_config_base = os.path.join( os.getenv( "SSH_AGENT_CRYPT", os.path.expanduser( "~/.config/ssh-agent-crypt" ) ), *qualifiers )
-qualifier_md5 = md5( repr( qualifiers ).encode("utf-8") ).hexdigest()
+## verify args..
+identifier_safe = []
+if args.command:
+	if args.command == "get" and ( args.all or args.list or args.key ):
+		usage( parser, "ERROR: can't use 'get' command with any other flags" )
+	
+	elif args.command == "set" and ( not args.all and not args.key ):
+		usage( parser, "ERROR: 'set' command requires key(s) (or -a/--all)" )
+	
+	if not args.identifier:
+		usage( parser, "ERROR: must provide one or more identifiers when using 'get' or 'set'" )
+	
+	for i in args.identifier:
+		identifier_safe.append( quote( i, safe='' ) ) # sanitize identifiers to make them filesystem-safe
+	
+elif not args.list:
+	usage( parser, "ERROR: must specify 'get' or 'set' command and identifiers if not using -l/--list" )
+
 
 agent = paramiko.Agent()
 agent_keys = agent.get_keys()
 
 if not agent_keys:
-	print >>sys.stderr, "ERROR: no SSH keys found in ssh-agent"
-	sys.exit( 3 )
+	eprint( "ERROR: no SSH keys found in ssh-agent", exit=3 )
 
+
+path_config_base = os.path.join( os.getenv( "SSH_AGENT_CRYPT", os.path.expanduser( "~/.config/ssh-agent-crypt" ) ), *identifier_safe )
+identifier_hash = md5( repr( identifier_safe ).encode("utf-8") ).hexdigest()
+
+count_encrypted = 0
 for key in agent_keys:
-	if key.get_fingerprint().encode('hex_codec') != key_md5:
+	key_md5 = key.get_fingerprint().encode('hex_codec')
+	
+	if args.list:
+		print( "key: %s %s (%susable)" % ( key_md5, key.get_name(), [ "un", "" ][ key.get_name() == "ssh-rsa" ] ) )
 		continue
 	
-	path_file = os.path.join( path_config_base, key.get_fingerprint().encode('hex_codec') )
-	password = key.sign_ssh_data( qualifier_md5 )
+	if key.get_name() != "ssh-rsa": # only ssh-rsa keys produce a consistent signature output (given the same input) that can be used for encryption/decryption
+		continue
 	
-	if get_or_set == "get":
+	path_file = os.path.join( path_config_base, key_md5 )
+	
+	if args.command == "get":
+		
 		if not os.path.isfile( path_file ):
-			print >>sys.stderr, "ERROR: encrypted data not found:", path_file
-			sys.exit( 4 )
+			continue
+		
+		password = key.sign_ssh_data( identifier_hash )
 		
 		with open( path_file, 'rb' ) as fp:
 			try:
 				decrypt( fp, password ) # decrypt to stdout
 			except:
-				print >>sys.stderr, "ERROR: decryption failed:", path_file
-				sys.exit( 4 )
+				eprint( "ERROR: decryption failed:", path_file, exit=4 )
 		
 		sys.exit( 0 )
 	
-	elif get_or_set == "set":
+	elif args.command == "set":
+		
+		if not args.all and key_md5 not in args.key:
+			continue
+		
 		os.umask( 077 )
 		if not os.path.isdir( os.path.dirname( path_file ) ):
 			os.makedirs( os.path.dirname( path_file ) )
+		
+		password = key.sign_ssh_data( identifier_hash )
+		if password != key.sign_ssh_data( identifier_hash ): ## detect and ignore unusable variable signature output from DSA/ECDSA keys
+			eprint( "WARNING: ignoring inconsistent signature output for key (perhaps it's not an RSA key):", key_md5, key.get_name() )
+			continue
 		
 		with open( path_file + ".tmp", 'wb' ) as fp:
 			try:
 				encrypt( fp, password ) # encrypt from stdin
 			except:
-				print >>sys.stderr, "ERROR: encryption failed:", path_file
-				sys.exit( 4 )
+				eprint( "ERROR: encryption failed:", path_file, exit=4 )
 		
 		os.rename( path_file + ".tmp", path_file ) # for atomic write
-		sys.exit( 0 )
+		print( "encrypted for key:", key_md5, key.get_name(), " ".join( identifier_safe ) )
+		count_encrypted += 1
 
-print >>sys.stderr, "ERROR: %s failed, key (%s) not found in ssh-agent" % ( get_or_set, key_md5 )
-sys.exit( 1 )
+
+if args.command == "get":
+	eprint( "ERROR: encrypted data not found for specified keys and identifiers", exit=1 )
+elif args.command == "set":
+	if count_encrypted:
+		sys.exit( 0 )
+	eprint( "ERROR: none of the speicifed keys were available for encryption", exit=1 )
+
+if not args.list:
+	eprint( "ERROR: unknown error", exit=1 )
