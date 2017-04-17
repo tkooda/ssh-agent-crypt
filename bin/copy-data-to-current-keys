@@ -1,0 +1,15 @@
+#!/bin/bash
+
+## 2017-04-17 : tkooda : encrypt all current ssh-agent-crypt'd passwords using currently-available SSH keys
+
+
+find ~/.config/ssh-agent-crypt/ -type f \
+  | sed 's,.*\.config/ssh-agent-crypt/,,g;s,/[^/]*$,,g;s,/, ,g' \
+  | sort -u \
+  | while IFS="`echo -e '\n'`" read l; do
+      echo "found: $l"
+      p=`ssh-agent-crypt get $l`
+      [ -n "$p" ] || continue
+      echo "$p" |ssh-agent-crypt -a set $l
+    done
+
