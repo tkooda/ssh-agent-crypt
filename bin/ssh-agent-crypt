@@ -27,6 +27,7 @@ import paramiko
 from hashlib import md5 # use md5 because `ssh-add -lE md5` supports it, and sha256 hashes are base64 that contain slashes
 from Crypto.Cipher import AES
 from Crypto import Random
+from glob import glob
 
 
 def usage( parser, *args, **kwargs ):
@@ -38,159 +39,243 @@ def usage( parser, *args, **kwargs ):
 
 
 def eprint( *args, **kwargs ):
-    exit = kwargs.pop( "exit", None )  # optional exit=N arg
-    sys.stdout.flush()
-    sys.stderr.flush()
-    print( *args, file=sys.stderr, **kwargs )
-    if exit:
-        sys.exit( exit )
+	exit = kwargs.pop( "exit", None )  # optional exit=N arg
+	sys.stdout.flush()
+	sys.stderr.flush()
+	print( *args, file=sys.stderr, **kwargs )
+	if exit:
+		sys.exit( exit )
 
 
 def derive_key_and_iv(password, salt, key_length, iv_length):
-    d = d_i = ''
-    while len(d) < key_length + iv_length:
-        d_i = md5(d_i + password + salt).digest()
-        d += d_i
-    return d[:key_length], d[key_length:key_length+iv_length]
+	d = d_i = ''
+	while len(d) < key_length + iv_length:
+		d_i = md5(d_i + password + salt).digest()
+		d += d_i
+	return d[:key_length], d[key_length:key_length+iv_length]
 
 
 def encrypt(out_file, password, key_length=32):
-    bs = AES.block_size
-    salt = Random.new().read(bs - len('Salted__'))
-    key, iv = derive_key_and_iv(password, salt, key_length, bs)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    out_file.write('Salted__' + salt)
-    finished = False
-    while not finished:
-        chunk = sys.stdin.read(1024 * bs)
-        if len(chunk) == 0 or len(chunk) % bs != 0:
-            padding_length = bs - (len(chunk) % bs)
-            chunk += padding_length * chr(padding_length)
-            finished = True
-        out_file.write(cipher.encrypt(chunk))
+	bs = AES.block_size
+	salt = Random.new().read(bs - len('Salted__'))
+	key, iv = derive_key_and_iv(password, salt, key_length, bs)
+	cipher = AES.new(key, AES.MODE_CBC, iv)
+	out_file.write('Salted__' + salt)
+	finished = False
+	while not finished:
+		chunk = sys.stdin.read(1024 * bs)
+		if len(chunk) == 0 or len(chunk) % bs != 0:
+			padding_length = bs - (len(chunk) % bs)
+			chunk += padding_length * chr(padding_length)
+			finished = True
+		out_file.write(cipher.encrypt(chunk))
 
 
 def decrypt(in_file, password, key_length=32):
-    bs = AES.block_size
-    salt = in_file.read(bs)[len('Salted__'):]
-    key, iv = derive_key_and_iv(password, salt, key_length, bs)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    next_chunk = ''
-    finished = False
-    while not finished:
-        chunk, next_chunk = next_chunk, cipher.decrypt(in_file.read(1024 * bs))
-        if len(next_chunk) == 0:
-            padding_length = ord(chunk[-1])
-            if padding_length < 1 or padding_length > bs:
-               raise ValueError("bad decrypt pad (%d)" % padding_length)
-            # all the pad-bytes must be the same
-            if chunk[-padding_length:] != (padding_length * chr(padding_length)):
-               # this is similar to the bad decrypt:evp_enc.c from openssl program
-               raise ValueError("bad decrypt")
-            chunk = chunk[:-padding_length]
-            finished = True
-        sys.stdout.write(chunk)
+	bs = AES.block_size
+	salt = in_file.read(bs)[len('Salted__'):]
+	key, iv = derive_key_and_iv(password, salt, key_length, bs)
+	cipher = AES.new(key, AES.MODE_CBC, iv)
+	next_chunk = ''
+	finished = False
+	while not finished:
+		chunk, next_chunk = next_chunk, cipher.decrypt(in_file.read(1024 * bs))
+		if len(next_chunk) == 0:
+			padding_length = ord(chunk[-1])
+			if padding_length < 1 or padding_length > bs:
+			   raise ValueError("bad decrypt pad (%d)" % padding_length)
+			# all the pad-bytes must be the same
+			if chunk[-padding_length:] != (padding_length * chr(padding_length)):
+			   # this is similar to the bad decrypt:evp_enc.c from openssl program
+			   raise ValueError("bad decrypt")
+			chunk = chunk[:-padding_length]
+			finished = True
+		sys.stdout.write(chunk)
 
 
-## parse args..
-parser = ArgumentParser( description = "Use RSA SSH keys from ssh-agent to store / retreive encrypted (e.g. config) data" )
-group = parser.add_mutually_exclusive_group()
-group.add_argument( "-k", "--key", action="append", help="md5 fingerprint of SSH key to encrypt the data for" )
-group.add_argument( "-a", "--all", action="store_true", default=False, help="Encrypt data for all RSA SSH keys currently in ssh-agent" )
-group.add_argument( "-l", "--list", action="store_true", default=False, help="List all SSH keys currently in ssh-agent" )
-parser.add_argument( "command", choices=[ "get", "set" ], nargs="?", help="Get or set encrypted data" )
-parser.add_argument( "identifier", nargs="*", help="One or more data identifiers (e.g. 'imaps' 'example.com' 'myuser')" )
-args = parser.parse_args()
+def decrypt_to_string(in_file, password, key_length=32):
+	cleartext = ''
+	bs = AES.block_size
+	salt = in_file.read(bs)[len('Salted__'):]
+	key, iv = derive_key_and_iv(password, salt, key_length, bs)
+	cipher = AES.new(key, AES.MODE_CBC, iv)
+	next_chunk = ''
+	finished = False
+	while not finished:
+		chunk, next_chunk = next_chunk, cipher.decrypt(in_file.read(1024 * bs))
+		if len(next_chunk) == 0:
+			padding_length = ord(chunk[-1])
+			if padding_length < 1 or padding_length > bs:
+			   raise ValueError("bad decrypt pad (%d)" % padding_length)
+			# all the pad-bytes must be the same
+			if chunk[-padding_length:] != (padding_length * chr(padding_length)):
+			   # this is similar to the bad decrypt:evp_enc.c from openssl program
+			   raise ValueError("bad decrypt")
+			chunk = chunk[:-padding_length]
+			finished = True
+		cleartext += chunk
+	return cleartext
 
 
-## verify args..
-identifier_safe = []
-if args.command:
-	if args.command == "get" and ( args.all or args.list or args.key ):
-		usage( parser, "ERROR: can't use 'get' command with any other flags" )
+def get_ssh_agent_keys( search = True ):
+	agent = paramiko.Agent()
+	agent_keys = agent.get_keys()
 	
-	elif args.command == "set" and ( not args.all and not args.key ):
-		usage( parser, "ERROR: 'set' command requires key(s) (or -a/--all)" )
+	if not agent_keys and search:
+		for s in glob( "/tmp/ssh-*/agent.[0-9]*" ):
+			if not os.path.exists( s ):
+				continue
+			os.environ[ "SSH_AUTH_SOCK" ] = s
+			agent = paramiko.Agent()
+			agent_keys = agent.get_keys()
+			if agent_keys:
+				return agent_keys
 	
-	if not args.identifier:
-		usage( parser, "ERROR: must provide one or more identifiers when using 'get' or 'set'" )
-	
-	for i in args.identifier:
+	return agent_keys
+
+# example usage in ~/.offlineimaprc:
+#   [general]
+#   pythonfile = path/to/ssh-agent-crypt
+#
+#   [Repository ...]
+#   remotepasseval = get_password( "imaps", "example.com", "myuser" )
+def get_password( *identifiers ): # solo function for calling from ~/.offlineimaprc, returns decrypted cleartext string
+	identifier_safe = []
+	for i in identifiers:
 		identifier_safe.append( quote( i, safe='' ) ) # sanitize identifiers to make them filesystem-safe
 	
-elif not args.list:
-	usage( parser, "ERROR: must specify 'get' or 'set' command and identifiers if not using -l/--list" )
-
-
-agent = paramiko.Agent()
-agent_keys = agent.get_keys()
-
-if not agent_keys:
-	eprint( "ERROR: no SSH keys found in ssh-agent", exit=3 )
-
-
-path_config_base = os.path.join( os.getenv( "SSH_AGENT_CRYPT", os.path.expanduser( "~/.config/ssh-agent-crypt" ) ), *identifier_safe )
-identifier_hash = md5( repr( identifier_safe ).encode("utf-8") ).hexdigest()
-
-count_encrypted = 0
-for key in agent_keys:
-	key_md5 = key.get_fingerprint().encode('hex_codec')
+	agent_keys = get_ssh_agent_keys()
 	
-	if args.list:
-		print( "key: %s %s (%susable)" % ( key_md5, key.get_name(), [ "un", "" ][ key.get_name() == "ssh-rsa" ] ) )
-		continue
+	if not agent_keys:
+		eprint( "ERROR: no SSH keys found in ssh-agent", exit=3 )
 	
-	if key.get_name() != "ssh-rsa": # only ssh-rsa keys produce a consistent signature output (given the same input) that can be used for encryption/decryption
-		continue
+	path_config_base = os.path.join( os.getenv( "SSH_AGENT_CRYPT", os.path.expanduser( "~/.config/ssh-agent-crypt" ) ), *identifier_safe )
+	identifier_hash = md5( repr( identifier_safe ).encode("utf-8") ).hexdigest()
 	
-	path_file = os.path.join( path_config_base, key_md5 )
-	
-	if args.command == "get":
+	for key in agent_keys:
+		key_md5 = key.get_fingerprint().encode('hex_codec')
+		
+		if key.get_name() != "ssh-rsa": # only ssh-rsa keys produce a consistent signature output (given the same input) that can be used for encryption/decryption
+			continue
+		
+		path_file = os.path.join( path_config_base, key_md5 )
 		
 		if not os.path.isfile( path_file ):
 			continue
 		
 		password = key.sign_ssh_data( identifier_hash )
 		
+		cleartext = None
 		with open( path_file, 'rb' ) as fp:
 			try:
-				decrypt( fp, password ) # decrypt to stdout
+				cleartext = decrypt_to_string( fp, password ) # decrypt to string
 			except:
 				eprint( "ERROR: decryption failed:", path_file, exit=4 )
 		
-		sys.exit( 0 )
+		return cleartext
+
+
+if __name__ == '__main__':
 	
+	## parse args..
+	parser = ArgumentParser( description = "Use RSA SSH keys from ssh-agent to store / retreive encrypted (e.g. config) data" )
+	group = parser.add_mutually_exclusive_group()
+	group.add_argument( "-k", "--key", action="append", help="md5 fingerprint of SSH key to encrypt the data for" )
+	group.add_argument( "-a", "--all", action="store_true", default=False, help="Encrypt data for all RSA SSH keys currently in ssh-agent" )
+	group.add_argument( "-l", "--list", action="store_true", default=False, help="List all SSH keys currently in ssh-agent" )
+	parser.add_argument( "--no-search", action="store_false", help="Don't search for a ssh-agent socket" )
+	parser.add_argument( "command", choices=[ "get", "set" ], nargs="?", help="Get or set encrypted data" )
+	parser.add_argument( "identifier", nargs="*", help="One or more data identifiers (e.g. 'imaps' 'example.com' 'myuser')" )
+	args = parser.parse_args()
+	
+	
+	## verify args..
+	identifier_safe = []
+	if args.command:
+		if args.command == "get" and ( args.all or args.list or args.key ):
+			usage( parser, "ERROR: can't use 'get' command with any other flags" )
+		
+		elif args.command == "set" and ( not args.all and not args.key ):
+			usage( parser, "ERROR: 'set' command requires key(s) (or -a/--all)" )
+		
+		if not args.identifier:
+			usage( parser, "ERROR: must provide one or more identifiers when using 'get' or 'set'" )
+		
+		for i in args.identifier:
+			identifier_safe.append( quote( i, safe='' ) ) # sanitize identifiers to make them filesystem-safe
+		
+	elif not args.list:
+		usage( parser, "ERROR: must specify 'get' or 'set' command and identifiers if not using -l/--list" )
+	
+	agent_keys = get_ssh_agent_keys( args.no_search )
+	
+	if not agent_keys:
+		eprint( "ERROR: no SSH keys found in ssh-agent", exit=3 )
+	
+	
+	path_config_base = os.path.join( os.getenv( "SSH_AGENT_CRYPT", os.path.expanduser( "~/.config/ssh-agent-crypt" ) ), *identifier_safe )
+	identifier_hash = md5( repr( identifier_safe ).encode("utf-8") ).hexdigest()
+	
+	count_encrypted = 0
+	for key in agent_keys:
+		key_md5 = key.get_fingerprint().encode('hex_codec')
+		
+		if args.list:
+			print( "key: %s %s (%susable)" % ( key_md5, key.get_name(), [ "un", "" ][ key.get_name() == "ssh-rsa" ] ) )
+			continue
+		
+		if key.get_name() != "ssh-rsa": # only ssh-rsa keys produce a consistent signature output (given the same input) that can be used for encryption/decryption
+			continue
+		
+		path_file = os.path.join( path_config_base, key_md5 )
+		
+		if args.command == "get":
+			
+			if not os.path.isfile( path_file ):
+				continue
+			
+			password = key.sign_ssh_data( identifier_hash )
+			
+			with open( path_file, 'rb' ) as fp:
+				try:
+					decrypt( fp, password ) # decrypt to stdout
+				except:
+					eprint( "ERROR: decryption failed:", path_file, exit=4 )
+			
+			sys.exit( 0 )
+		
+		elif args.command == "set":
+			
+			if not args.all and key_md5 not in args.key:
+				continue
+			
+			os.umask( 077 )
+			if not os.path.isdir( os.path.dirname( path_file ) ):
+				os.makedirs( os.path.dirname( path_file ) )
+			
+			password = key.sign_ssh_data( identifier_hash )
+			if password != key.sign_ssh_data( identifier_hash ): ## detect and ignore unusable variable signature output from DSA/ECDSA keys
+				eprint( "WARNING: ignoring inconsistent signature output for key (perhaps it's not an RSA key):", key_md5, key.get_name() )
+				continue
+			
+			with open( path_file + ".tmp", 'wb' ) as fp:
+				try:
+					encrypt( fp, password ) # encrypt from stdin
+				except:
+					eprint( "ERROR: encryption failed:", path_file, exit=4 )
+			
+			os.rename( path_file + ".tmp", path_file ) # for atomic write
+			print( "encrypted for key:", key_md5, key.get_name(), " ".join( identifier_safe ) )
+			count_encrypted += 1
+	
+	
+	if args.command == "get":
+		eprint( "ERROR: encrypted data not found for specified keys and identifiers", exit=1 )
 	elif args.command == "set":
-		
-		if not args.all and key_md5 not in args.key:
-			continue
-		
-		os.umask( 077 )
-		if not os.path.isdir( os.path.dirname( path_file ) ):
-			os.makedirs( os.path.dirname( path_file ) )
-		
-		password = key.sign_ssh_data( identifier_hash )
-		if password != key.sign_ssh_data( identifier_hash ): ## detect and ignore unusable variable signature output from DSA/ECDSA keys
-			eprint( "WARNING: ignoring inconsistent signature output for key (perhaps it's not an RSA key):", key_md5, key.get_name() )
-			continue
-		
-		with open( path_file + ".tmp", 'wb' ) as fp:
-			try:
-				encrypt( fp, password ) # encrypt from stdin
-			except:
-				eprint( "ERROR: encryption failed:", path_file, exit=4 )
-		
-		os.rename( path_file + ".tmp", path_file ) # for atomic write
-		print( "encrypted for key:", key_md5, key.get_name(), " ".join( identifier_safe ) )
-		count_encrypted += 1
+		if count_encrypted:
+			sys.exit( 0 )
+		eprint( "ERROR: none of the speicifed keys were available for encryption", exit=1 )
+	
+	if not args.list:
+		eprint( "ERROR: unknown error", exit=1 )
 
-
-if args.command == "get":
-	eprint( "ERROR: encrypted data not found for specified keys and identifiers", exit=1 )
-elif args.command == "set":
-	if count_encrypted:
-		sys.exit( 0 )
-	eprint( "ERROR: none of the speicifed keys were available for encryption", exit=1 )
-
-if not args.list:
-	eprint( "ERROR: unknown error", exit=1 )
