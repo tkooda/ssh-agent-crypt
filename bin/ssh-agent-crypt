@@ -183,6 +183,7 @@ if __name__ == '__main__':
 	group.add_argument( "-k", "--key", action="append", help="md5 fingerprint of SSH key to encrypt the data for" )
 	group.add_argument( "-a", "--all", action="store_true", default=False, help="Encrypt data for all RSA SSH keys currently in ssh-agent" )
 	group.add_argument( "-l", "--list", action="store_true", default=False, help="List all SSH keys currently in ssh-agent" )
+	group.add_argument( "-i", "--identities", action="store_true", default=False, help="List all identities that are available to the current SSH keys" )
 	parser.add_argument( "--no-search", action="store_false", help="Don't search for a ssh-agent socket" )
 	parser.add_argument( "command", choices=[ "get", "set" ], nargs="?", help="Get or set encrypted data" )
 	parser.add_argument( "identifier", nargs="*", help="One or more data identifiers (e.g. 'imaps' 'example.com' 'myuser')" )
@@ -204,8 +205,8 @@ if __name__ == '__main__':
 		for i in args.identifier:
 			identifier_safe.append( quote( i, safe='' ) ) # sanitize identifiers to make them filesystem-safe
 		
-	elif not args.list:
-		usage( parser, "ERROR: must specify 'get' or 'set' command and identifiers if not using -l/--list" )
+	elif not args.list and not args.identities:
+		usage( parser, "ERROR: must specify 'get' or 'set' command and identifiers if not using -l/--list or -i/--identities" )
 	
 	agent_keys = get_ssh_agent_keys( args.no_search )
 	
@@ -228,6 +229,15 @@ if __name__ == '__main__':
 			continue
 		
 		path_file = os.path.join( path_config_base, key_md5 )
+		
+		if args.identities:
+			for root, dirnames, filenames in os.walk( path_config_base ):
+				for filename in filenames:
+					if filename != key_md5:
+						continue
+					print( key_md5, " ".join( root[ len( path_config_base ) : ].split( "/" ) ).strip( " " ) )
+			
+			continue
 		
 		if args.command == "get":
 			
@@ -276,6 +286,6 @@ if __name__ == '__main__':
 			sys.exit( 0 )
 		eprint( "ERROR: none of the speicifed keys were available for encryption", exit=1 )
 	
-	if not args.list:
+	if not args.list and not args.identities:
 		eprint( "ERROR: unknown error", exit=1 )
 
